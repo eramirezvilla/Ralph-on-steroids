@@ -18,6 +18,57 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 
 ## Output Format
 
+Ralph supports two prd.json formats: **phased** (recommended) and **legacy flat**.
+
+### Phased Format (Recommended)
+
+Use this for features with 4+ stories. Groups stories into phases with review gates between them.
+
+```json
+{
+  "project": "[Project Name]",
+  "branchName": "ralph/[feature-name-kebab-case]",
+  "description": "[Feature description from PRD title/intro]",
+  "orchestration": {
+    "currentPhaseIndex": 0,
+    "status": "executing",
+    "dualPrdComplete": false,
+    "maxPlanRetries": 2
+  },
+  "phases": [
+    {
+      "id": "phase-1",
+      "title": "[Phase Title - describes capability]",
+      "description": "[What this phase accomplishes]",
+      "order": 1,
+      "status": "pending",
+      "reviewApproved": false,
+      "reviewNotes": "",
+      "planVersion": 0,
+      "userStories": [
+        {
+          "id": "US-001",
+          "title": "[Story title]",
+          "description": "As a [user], I want [feature] so that [benefit]",
+          "acceptanceCriteria": [
+            "Criterion 1",
+            "Criterion 2",
+            "Typecheck passes"
+          ],
+          "priority": 1,
+          "passes": false,
+          "notes": ""
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Legacy Flat Format
+
+Use this for small features with 1-3 stories where phases are overkill.
+
 ```json
 {
   "project": "[Project Name]",
@@ -43,11 +94,34 @@ Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph di
 
 ---
 
+## Phase Grouping Rules
+
+When using phased format:
+
+1. **Phase boundaries** should fall at natural integration points:
+   - After schema/database changes
+   - After core backend logic
+   - After each major UI section
+
+2. **Each phase should be 2-5 stories** (enough to be meaningful, small enough to review)
+
+3. **Phase naming** describes the capability, not the technology:
+   - Good: "Priority Data Layer", "Priority Display", "Priority Filtering"
+   - Bad: "Database Phase", "React Phase", "API Phase"
+
+4. **Phase ordering** follows the dependency chain:
+   - Phase 1: Schema/database
+   - Phase 2: Backend logic/services
+   - Phase 3: UI components
+   - Phase 4: Dashboard/aggregation views
+
+---
+
 ## Story Size: The Number One Rule
 
 **Each story must be completable in ONE Ralph iteration (one context window).**
 
-Ralph spawns a fresh Amp instance per iteration with no memory of previous work. If a story is too big, the LLM runs out of context before finishing and produces broken code.
+Ralph spawns a fresh AI instance per iteration with no memory of previous work. If a story is too big, the LLM runs out of context before finishing and produces broken code.
 
 ### Right-sized stories:
 - Add a database column and migration
@@ -146,7 +220,7 @@ Each is one focused change that can be completed and verified independently.
 
 ---
 
-## Example
+## Example (Phased Format)
 
 **Input PRD:**
 ```markdown
@@ -167,62 +241,104 @@ Add ability to mark tasks with different statuses.
   "project": "TaskApp",
   "branchName": "ralph/task-status",
   "description": "Task Status Feature - Track task progress with status indicators",
-  "userStories": [
+  "orchestration": {
+    "currentPhaseIndex": 0,
+    "status": "executing",
+    "dualPrdComplete": false,
+    "maxPlanRetries": 2
+  },
+  "phases": [
     {
-      "id": "US-001",
-      "title": "Add status field to tasks table",
-      "description": "As a developer, I need to store task status in the database.",
-      "acceptanceCriteria": [
-        "Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')",
-        "Generate and run migration successfully",
-        "Typecheck passes"
-      ],
-      "priority": 1,
-      "passes": false,
-      "notes": ""
+      "id": "phase-1",
+      "title": "Status Data Layer",
+      "description": "Database schema for task status tracking",
+      "order": 1,
+      "status": "pending",
+      "reviewApproved": false,
+      "reviewNotes": "",
+      "planVersion": 0,
+      "userStories": [
+        {
+          "id": "US-001",
+          "title": "Add status field to tasks table",
+          "description": "As a developer, I need to store task status in the database.",
+          "acceptanceCriteria": [
+            "Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')",
+            "Generate and run migration successfully",
+            "Typecheck passes"
+          ],
+          "priority": 1,
+          "passes": false,
+          "notes": ""
+        }
+      ]
     },
     {
-      "id": "US-002",
-      "title": "Display status badge on task cards",
-      "description": "As a user, I want to see task status at a glance.",
-      "acceptanceCriteria": [
-        "Each task card shows colored status badge",
-        "Badge colors: gray=pending, blue=in_progress, green=done",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 2,
-      "passes": false,
-      "notes": ""
+      "id": "phase-2",
+      "title": "Status Display & Editing",
+      "description": "User-facing status indicators and toggle controls",
+      "order": 2,
+      "status": "pending",
+      "reviewApproved": false,
+      "reviewNotes": "",
+      "planVersion": 0,
+      "userStories": [
+        {
+          "id": "US-002",
+          "title": "Display status badge on task cards",
+          "description": "As a user, I want to see task status at a glance.",
+          "acceptanceCriteria": [
+            "Each task card shows colored status badge",
+            "Badge colors: gray=pending, blue=in_progress, green=done",
+            "Typecheck passes",
+            "Verify in browser using dev-browser skill"
+          ],
+          "priority": 2,
+          "passes": false,
+          "notes": ""
+        },
+        {
+          "id": "US-003",
+          "title": "Add status toggle to task list rows",
+          "description": "As a user, I want to change task status directly from the list.",
+          "acceptanceCriteria": [
+            "Each row has status dropdown or toggle",
+            "Changing status saves immediately",
+            "UI updates without page refresh",
+            "Typecheck passes",
+            "Verify in browser using dev-browser skill"
+          ],
+          "priority": 3,
+          "passes": false,
+          "notes": ""
+        }
+      ]
     },
     {
-      "id": "US-003",
-      "title": "Add status toggle to task list rows",
-      "description": "As a user, I want to change task status directly from the list.",
-      "acceptanceCriteria": [
-        "Each row has status dropdown or toggle",
-        "Changing status saves immediately",
-        "UI updates without page refresh",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 3,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-004",
-      "title": "Filter tasks by status",
-      "description": "As a user, I want to filter the list to see only certain statuses.",
-      "acceptanceCriteria": [
-        "Filter dropdown: All | Pending | In Progress | Done",
-        "Filter persists in URL params",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 4,
-      "passes": false,
-      "notes": ""
+      "id": "phase-3",
+      "title": "Status Filtering",
+      "description": "Filter task list by status",
+      "order": 3,
+      "status": "pending",
+      "reviewApproved": false,
+      "reviewNotes": "",
+      "planVersion": 0,
+      "userStories": [
+        {
+          "id": "US-004",
+          "title": "Filter tasks by status",
+          "description": "As a user, I want to filter the list to see only certain statuses.",
+          "acceptanceCriteria": [
+            "Filter dropdown: All | Pending | In Progress | Done",
+            "Filter persists in URL params",
+            "Typecheck passes",
+            "Verify in browser using dev-browser skill"
+          ],
+          "priority": 4,
+          "passes": false,
+          "notes": ""
+        }
+      ]
     }
   ]
 }
@@ -250,9 +366,11 @@ Add ability to mark tasks with different statuses.
 Before writing prd.json, verify:
 
 - [ ] **Previous run archived** (if prd.json exists with different branchName, archive it first)
+- [ ] **Format chosen** (phased for 4+ stories, flat for 1-3 stories)
 - [ ] Each story is completable in one iteration (small enough)
 - [ ] Stories are ordered by dependency (schema to backend to UI)
 - [ ] Every story has "Typecheck passes" as criterion
 - [ ] UI stories have "Verify in browser using dev-browser skill" as criterion
 - [ ] Acceptance criteria are verifiable (not vague)
 - [ ] No story depends on a later story
+- [ ] **If phased:** phases are 2-5 stories each, named by capability

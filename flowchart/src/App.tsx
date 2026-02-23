@@ -21,71 +21,91 @@ import './App.css';
 const nodeWidth = 240;
 const nodeHeight = 70;
 
-// Setup phase - horizontal at top
-// Loop phase - circular arrangement below
-// Exit - at bottom center
-
-type Phase = 'setup' | 'loop' | 'decision' | 'done';
+type Phase = 'setup' | 'dual' | 'merge' | 'loop' | 'review' | 'decision' | 'done';
 
 const phaseColors: Record<Phase, { bg: string; border: string }> = {
   setup: { bg: '#f0f7ff', border: '#4a90d9' },
+  dual: { bg: '#f0f0ff', border: '#6b5ce7' },
+  merge: { bg: '#fff0f5', border: '#d94a8a' },
   loop: { bg: '#f5f5f5', border: '#666666' },
+  review: { bg: '#fff3e6', border: '#e67e22' },
   decision: { bg: '#fff8e6', border: '#c9a227' },
   done: { bg: '#f0fff4', border: '#38a169' },
 };
 
 const allSteps: { id: string; label: string; description: string; phase: Phase }[] = [
-  // Setup phase (vertical)
-  { id: '1', label: 'You write a PRD', description: 'Define what you want to build', phase: 'setup' },
-  { id: '2', label: 'Convert to prd.json', description: 'Break into small user stories', phase: 'setup' },
-  { id: '3', label: 'Run ralph.sh', description: 'Starts the autonomous loop', phase: 'setup' },
-  // Loop phase
-  { id: '4', label: 'AI picks a story', description: 'Finds next passes: false', phase: 'loop' },
-  { id: '5', label: 'Implements it', description: 'Writes code, runs tests', phase: 'loop' },
-  { id: '6', label: 'Commits changes', description: 'If tests pass', phase: 'loop' },
-  { id: '7', label: 'Updates prd.json', description: 'Sets passes: true', phase: 'loop' },
-  { id: '8', label: 'Logs to progress.txt', description: 'Saves learnings', phase: 'loop' },
-  { id: '9', label: 'More stories?', description: '', phase: 'decision' },
-  // Exit
-  { id: '10', label: 'Done!', description: 'All stories complete', phase: 'done' },
+  // Setup
+  { id: '1', label: 'Feature description', description: 'User describes what to build', phase: 'setup' },
+
+  // Dual PRD creation
+  { id: '2a', label: 'PRD Author A', description: 'Technical depth focus', phase: 'dual' },
+  { id: '2b', label: 'PRD Author B', description: 'User experience focus', phase: 'dual' },
+  { id: '3', label: 'PRD Merger', description: 'Synthesizes best of both', phase: 'merge' },
+  { id: '4', label: 'prd.json with phases', description: 'Phased user stories created', phase: 'setup' },
+
+  // Phase planning (single balanced planner)
+  { id: '5', label: 'Phase Planner', description: 'Balanced plan (skip if 1 story)', phase: 'merge' },
+
+  // Execution loop
+  { id: '7', label: 'AI picks a story', description: 'From current phase', phase: 'loop' },
+  { id: '8', label: 'Implements it', description: 'Writes code, runs tests', phase: 'loop' },
+  { id: '9', label: 'Commits changes', description: 'If tests pass', phase: 'loop' },
+  { id: '10', label: 'Updates prd.json', description: 'Sets passes: true', phase: 'loop' },
+  { id: '11', label: 'Logs to progress.txt', description: 'Saves learnings', phase: 'loop' },
+  { id: '12', label: 'Phase stories done?', description: '', phase: 'decision' },
+
+  // Phase review
+  { id: '13', label: 'Phase Reviewer', description: 'Reviews completed work', phase: 'review' },
+  { id: '14', label: 'Approved?', description: '', phase: 'decision' },
+
+  // Targeted fix (on rejection)
+  { id: '17', label: 'Targeted Fix', description: 'Only failed stories re-executed', phase: 'review' },
+
+  // More phases
+  { id: '15', label: 'More phases?', description: '', phase: 'decision' },
+
+  // Done
+  { id: '16', label: 'Done!', description: 'All phases complete', phase: 'done' },
 ];
 
 const notes = [
   {
     id: 'note-1',
-    appearsWithStep: 2,
-    position: { x: 340, y: 100 },
+    appearsWithStep: 4,
+    position: { x: 580, y: 20 },
     color: { bg: '#f5f0ff', border: '#8b5cf6' },
-    content: `{
-  "id": "US-001",
-  "title": "Add priority field to database",
-  "acceptanceCriteria": [
-    "Add priority column to tasks table",
-    "Generate and run migration",
-    "Typecheck passes"
-  ],
-  "passes": false
-}`,
+    content: `Two authors independently write
+PRDs with different lenses, then
+a merger combines the best of both.`,
   },
   {
     id: 'note-2',
-    appearsWithStep: 8,
-    position: { x: 480, y: 620 },
-    color: { bg: '#fdf4f0', border: '#c97a50' },
-    content: `Also updates AGENTS.md with
-patterns discovered, so future
-iterations learn from this one.`,
+    appearsWithStep: 6,
+    position: { x: 580, y: 400 },
+    color: { bg: '#e6f7ff', border: '#1890ff' },
+    content: `Single balanced planner for 2+
+stories. Single-story phases
+skip planning entirely.`,
+  },
+  {
+    id: 'note-3',
+    appearsWithStep: 14,
+    position: { x: 580, y: 920 },
+    color: { bg: '#fff3e6', border: '#e67e22' },
+    content: `Reviewer checks if work matches
+the PRD. Rejection triggers targeted
+fix of only the failed stories.`,
   },
 ];
 
 function CustomNode({ data }: { data: { title: string; description: string; phase: Phase } }) {
   const colors = phaseColors[data.phase];
   return (
-    <div 
+    <div
       className="custom-node"
-      style={{ 
-        backgroundColor: colors.bg, 
-        borderColor: colors.border 
+      style={{
+        backgroundColor: colors.bg,
+        borderColor: colors.border,
       }}
     >
       <Handle type="target" position={Position.Top} id="top" />
@@ -106,7 +126,7 @@ function CustomNode({ data }: { data: { title: string; description: string; phas
 
 function NoteNode({ data }: { data: { content: string; color: { bg: string; border: string } } }) {
   return (
-    <div 
+    <div
       className="note-node"
       style={{
         backgroundColor: data.color.bg,
@@ -120,41 +140,106 @@ function NoteNode({ data }: { data: { content: string; color: { bg: string; bord
 
 const nodeTypes = { custom: CustomNode, note: NoteNode };
 
+// Layout positions
 const positions: { [key: string]: { x: number; y: number } } = {
-  // Vertical setup flow on the left
-  '1': { x: 20, y: 20 },
-  '2': { x: 80, y: 130 },
-  '3': { x: 60, y: 250 },
-  // Loop
-  '4': { x: 40, y: 420 },
-  '5': { x: 450, y: 300 },
-  '6': { x: 750, y: 450 },
-  '7': { x: 470, y: 520 },
-  '8': { x: 200, y: 620 },
-  '9': { x: 40, y: 720 },
-  // Exit
-  '10': { x: 350, y: 880 },
+  // Setup
+  '1': { x: 180, y: 20 },
+
+  // Dual PRD - fork
+  '2a': { x: 40, y: 120 },
+  '2b': { x: 320, y: 120 },
+
+  // Merge
+  '3': { x: 180, y: 230 },
+
+  // prd.json
+  '4': { x: 180, y: 330 },
+
+  // Phase planning (single)
+  '5': { x: 180, y: 430 },
+
+  // Execution loop
+  '7': { x: 40, y: 540 },
+  '8': { x: 320, y: 540 },
+  '9': { x: 320, y: 640 },
+  '10': { x: 180, y: 740 },
+  '11': { x: 40, y: 640 },
+  '12': { x: 40, y: 840 },
+
+  // Review
+  '13': { x: 180, y: 940 },
+
+  // Approved?
+  '14': { x: 180, y: 1040 },
+
+  // Targeted fix (rejection path)
+  '17': { x: 440, y: 1040 },
+
+  // More phases?
+  '15': { x: 180, y: 1160 },
+
+  // Done
+  '16': { x: 180, y: 1280 },
+
   // Notes
-  ...Object.fromEntries(notes.map(n => [n.id, n.position])),
+  ...Object.fromEntries(notes.map((n) => [n.id, n.position])),
 };
 
-const edgeConnections: { source: string; target: string; sourceHandle?: string; targetHandle?: string; label?: string }[] = [
-  // Setup phase (vertical) - bottom to top connections
-  { source: '1', target: '2', sourceHandle: 'bottom', targetHandle: 'top' },
-  { source: '2', target: '3', sourceHandle: 'bottom', targetHandle: 'top' },
+const edgeConnections: {
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  label?: string;
+}[] = [
+  // Setup → dual PRD fork
+  { source: '1', target: '2a', sourceHandle: 'bottom', targetHandle: 'top' },
+  { source: '1', target: '2b', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Dual PRD → merger
+  { source: '2a', target: '3', sourceHandle: 'bottom', targetHandle: 'top' },
+  { source: '2b', target: '3', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Merger → prd.json
   { source: '3', target: '4', sourceHandle: 'bottom', targetHandle: 'top' },
-  // Loop phase
-  { source: '4', target: '5', sourceHandle: 'right', targetHandle: 'left' },
-  { source: '5', target: '6', sourceHandle: 'right', targetHandle: 'top' },
-  { source: '6', target: '7', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '7', target: '8', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '8', target: '9', sourceHandle: 'left-source', targetHandle: 'right-target' },
-  { source: '9', target: '4', sourceHandle: 'top-source', targetHandle: 'bottom-target', label: 'Yes' },
-  // Exit
-  { source: '9', target: '10', sourceHandle: 'bottom', targetHandle: 'top', label: 'No' },
+
+  // prd.json → Phase Planner (single)
+  { source: '4', target: '5', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Phase Planner → execution
+  { source: '5', target: '7', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Execution loop
+  { source: '7', target: '8', sourceHandle: 'right', targetHandle: 'left' },
+  { source: '8', target: '9', sourceHandle: 'bottom', targetHandle: 'top' },
+  { source: '9', target: '10', sourceHandle: 'left-source', targetHandle: 'right-target' },
+  { source: '10', target: '11', sourceHandle: 'left-source', targetHandle: 'right-target' },
+  { source: '11', target: '12', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Phase stories done? → loop back or review
+  { source: '12', target: '7', sourceHandle: 'top-source', targetHandle: 'bottom-target', label: 'No' },
+  { source: '12', target: '13', sourceHandle: 'right', targetHandle: 'left', label: 'Yes' },
+
+  // Review → approved?
+  { source: '13', target: '14', sourceHandle: 'bottom', targetHandle: 'top' },
+
+  // Approved? → targeted fix or more phases
+  { source: '14', target: '17', sourceHandle: 'right', targetHandle: 'left', label: 'No' },
+  { source: '14', target: '15', sourceHandle: 'bottom', targetHandle: 'top', label: 'Yes' },
+
+  // Targeted fix → back to execution loop
+  { source: '17', target: '7', sourceHandle: 'top-source', targetHandle: 'right-target' },
+
+  // More phases? → next phase planning or done
+  { source: '15', target: '5', sourceHandle: 'left-source', targetHandle: 'bottom-target', label: 'Yes' },
+  { source: '15', target: '16', sourceHandle: 'bottom', targetHandle: 'top', label: 'No' },
 ];
 
-function createNode(step: typeof allSteps[0], visible: boolean, position?: { x: number; y: number }): Node {
+function createNode(
+  step: (typeof allSteps)[0],
+  visible: boolean,
+  position?: { x: number; y: number }
+): Node {
   return {
     id: step.id,
     type: 'custom',
@@ -174,7 +259,7 @@ function createNode(step: typeof allSteps[0], visible: boolean, position?: { x: 
   };
 }
 
-function createEdge(conn: typeof edgeConnections[0], visible: boolean): Edge {
+function createEdge(conn: (typeof edgeConnections)[0], visible: boolean): Edge {
   return {
     id: `e${conn.source}-${conn.target}`,
     source: conn.source,
@@ -208,7 +293,11 @@ function createEdge(conn: typeof edgeConnections[0], visible: boolean): Edge {
   };
 }
 
-function createNoteNode(note: typeof notes[0], visible: boolean, position?: { x: number; y: number }): Node {
+function createNoteNode(
+  note: (typeof notes)[0],
+  visible: boolean,
+  position?: { x: number; y: number }
+): Node {
   return {
     id: note.id,
     type: 'note',
@@ -233,7 +322,7 @@ function App() {
     const stepNodes = allSteps.map((step, index) =>
       createNode(step, index < count, nodePositions.current[step.id])
     );
-    const noteNodes = notes.map(note => {
+    const noteNodes = notes.map((note) => {
       const noteVisible = count >= note.appearsWithStep;
       return createNoteNode(note, noteVisible, nodePositions.current[note.id]);
     });
@@ -241,9 +330,7 @@ function App() {
   };
 
   const initialNodes = getNodes(1);
-  const initialEdges = edgeConnections.map((conn, index) =>
-    createEdge(conn, index < 0)
-  );
+  const initialEdges = edgeConnections.map((conn) => createEdge(conn, false));
 
   const [nodes, setNodes] = useNodesState(initialNodes);
   const [edges, setEdges] = useEdgesState(initialEdges);
@@ -269,7 +356,17 @@ function App() {
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      setEdges((eds) => addEdge({ ...connection, animated: true, style: { stroke: '#222', strokeWidth: 2 }, markerEnd: { type: MarkerType.ArrowClosed, color: '#222' } }, eds));
+      setEdges((eds) =>
+        addEdge(
+          {
+            ...connection,
+            animated: true,
+            style: { stroke: '#222', strokeWidth: 2 },
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#222' },
+          },
+          eds
+        )
+      );
     },
     [setEdges]
   );
@@ -281,9 +378,9 @@ function App() {
     [setEdges]
   );
 
-  const getEdgeVisibility = (conn: typeof edgeConnections[0], visibleStepCount: number) => {
-    const sourceIndex = allSteps.findIndex(s => s.id === conn.source);
-    const targetIndex = allSteps.findIndex(s => s.id === conn.target);
+  const getEdgeVisibility = (conn: (typeof edgeConnections)[0], visibleStepCount: number) => {
+    const sourceIndex = allSteps.findIndex((s) => s.id === conn.source);
+    const targetIndex = allSteps.findIndex((s) => s.id === conn.target);
     return sourceIndex < visibleStepCount && targetIndex < visibleStepCount;
   };
 
@@ -293,11 +390,7 @@ function App() {
       setVisibleCount(newCount);
 
       setNodes(getNodes(newCount));
-      setEdges(
-        edgeConnections.map((conn) =>
-          createEdge(conn, getEdgeVisibility(conn, newCount))
-        )
-      );
+      setEdges(edgeConnections.map((conn) => createEdge(conn, getEdgeVisibility(conn, newCount))));
     }
   }, [visibleCount, setNodes, setEdges]);
 
@@ -307,11 +400,7 @@ function App() {
       setVisibleCount(newCount);
 
       setNodes(getNodes(newCount));
-      setEdges(
-        edgeConnections.map((conn) =>
-          createEdge(conn, getEdgeVisibility(conn, newCount))
-        )
-      );
+      setEdges(edgeConnections.map((conn) => createEdge(conn, getEdgeVisibility(conn, newCount))));
     }
   }, [visibleCount, setNodes, setEdges]);
 
@@ -319,14 +408,14 @@ function App() {
     setVisibleCount(1);
     nodePositions.current = { ...positions };
     setNodes(getNodes(1));
-    setEdges(edgeConnections.map((conn, index) => createEdge(conn, index < 0)));
+    setEdges(edgeConnections.map((conn) => createEdge(conn, false)));
   }, [setNodes, setEdges]);
 
   return (
     <div className="app-container">
       <div className="header">
         <h1>How Ralph Works</h1>
-        <p>Autonomous AI agent loop for completing PRDs</p>
+        <p>Multi-phase autonomous AI agent loop with review gates and targeted fixes</p>
       </div>
       <div className="flow-container">
         <ReactFlow
@@ -369,9 +458,7 @@ function App() {
           Reset
         </button>
       </div>
-      <div className="instructions">
-        Click Next to reveal each step
-      </div>
+      <div className="instructions">Click Next to reveal each step</div>
     </div>
   );
 }

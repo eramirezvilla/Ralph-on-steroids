@@ -5,15 +5,19 @@ You are an autonomous coding agent working on a software project.
 ## Your Task
 
 1. Read the PRD at `prd.json` (in the same directory as this file)
-2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
-3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
-4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
-6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update AGENTS.md files if you discover reusable patterns (see below)
-8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update the PRD to set `passes: true` for the completed story
-10. Append your progress to `progress.txt`
+2. **Determine format:**
+   - If `prd.json` has a `phases` array → use **phased mode** (read `orchestration.currentPhaseIndex` and work on stories in `phases[currentPhaseIndex].userStories`)
+   - If `prd.json` has a top-level `userStories` array → use **legacy mode** (work on `userStories` directly)
+3. Read the progress log at `progress.txt` (check Codebase Patterns section first)
+4. **If phased mode:** The phase plan may already be prepended to this prompt. If not, check for a phase plan at `ralph-plans/phase-{N}-plan-final.md` (where N is `currentPhaseIndex`). If it exists, read it for implementation guidance before starting.
+5. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
+6. Pick the **highest priority** user story where `passes: false` (within the current phase only if phased mode)
+7. Implement that single user story
+8. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
+9. Update AGENTS.md files if you discover reusable patterns (see below)
+10. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+11. Update the PRD to set `passes: true` for the completed story
+12. Append your progress to `progress.txt`
 
 ## Progress Report Format
 
@@ -93,9 +97,14 @@ A frontend story is NOT complete until browser verification passes.
 
 ## Stop Condition
 
-After completing a user story, check if ALL stories have `passes: true`.
+After completing a user story, check the completion condition:
 
-If ALL stories are complete and passing, reply with:
+**Phased mode:** Check if ALL stories in the **current phase** have `passes: true`.
+If yes, reply with:
+<promise>PHASE_COMPLETE</promise>
+
+**Legacy mode:** Check if ALL stories have `passes: true`.
+If yes, reply with:
 <promise>COMPLETE</promise>
 
 If there are still stories with `passes: false`, end your response normally (another iteration will pick up the next story).

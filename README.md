@@ -26,6 +26,7 @@ Copy the ralph files into your project:
 # From your project root
 mkdir -p scripts/ralph
 cp /path/to/ralph/ralph.sh scripts/ralph/
+cp -r /path/to/ralph/prompts scripts/ralph/prompts
 
 # Copy the prompt template for your AI tool of choice:
 cp /path/to/ralph/prompt.md scripts/ralph/prompt.md    # For Amp
@@ -43,12 +44,14 @@ For AMP
 ```bash
 cp -r skills/prd ~/.config/amp/skills/
 cp -r skills/ralph ~/.config/amp/skills/
+cp -r skills/dual-prd ~/.config/amp/skills/
 ```
 
 For Claude Code (manual)
 ```bash
 cp -r skills/prd ~/.claude/skills/
 cp -r skills/ralph ~/.claude/skills/
+cp -r skills/dual-prd ~/.claude/skills/
 ```
 
 ### Option 3: Use as Claude Code Marketplace
@@ -68,10 +71,12 @@ Then install the skills:
 Available skills after installation:
 - `/prd` - Generate Product Requirements Documents
 - `/ralph` - Convert PRDs to prd.json format
+- `/dual-prd` - Generate PRDs using dual-author synthesis (two perspectives merged into one)
 
 Skills are automatically invoked when you ask Claude to:
 - "create a prd", "write prd for", "plan this feature"
 - "convert this prd", "turn into ralph format", "create prd.json"
+- "dual prd", "create dual prd", "two-author prd"
 
 ### Configure Amp auto-handoff (recommended)
 
@@ -85,62 +90,148 @@ Add to `~/.config/amp/settings.json`:
 
 This enables automatic handoff when context fills up, allowing Ralph to handle large stories that exceed a single context window.
 
-## Workflow
+## Recommended Workflow
 
-### 1. Create a PRD
+Choose your workflow based on feature size:
 
-Use the PRD skill to generate a detailed requirements document:
+| Feature size | Stories | Recommended workflow |
+|---|---|---|
+| Small | 1-3 | `/prd` → `/ralph` → `ralph.sh --skip-dual-prd` |
+| Medium | 4-8 | `/dual-prd` → review prd.json → `ralph.sh --skip-dual-prd` |
+| Large | 9+ | `ralph.sh --feature "..."` (fully automated) |
 
-```
-Load the prd skill and create a PRD for [your feature description]
-```
+### Path 1: Small Features (1-3 stories)
 
-Answer the clarifying questions. The skill saves output to `tasks/prd-[feature-name].md`.
-
-### 2. Convert PRD to Ralph format
-
-Use the Ralph skill to convert the markdown PRD to JSON:
+The original flow. Quick and lightweight.
 
 ```
-Load the ralph skill and convert tasks/prd-[feature-name].md to prd.json
+# Step 1: Create a PRD interactively
+/prd
+
+# Step 2: Convert to Ralph's JSON format
+/ralph
+
+# Step 3: Run Ralph
+./ralph.sh --tool claude --skip-dual-prd
 ```
 
-This creates `prd.json` with user stories structured for autonomous execution.
+Ralph auto-detects flat prd.json and runs a simple loop — no phases, no review gates.
 
-### 3. Run Ralph
+### Path 2: Medium Features (4-8 stories) — Recommended
+
+Interactive dual-author PRD with a chance to review before execution.
+
+```
+# Step 1: Create a dual-perspective PRD interactively
+/dual-prd
+
+# Step 2: Review the generated prd.json — tweak phases, stories, or ACs if needed
+
+# Step 3: Run Ralph with phased execution
+./ralph.sh --tool claude --skip-dual-prd
+```
+
+The `/dual-prd` skill asks clarifying questions, creates two independent PRD perspectives (technical + UX), merges them, and writes a phased `prd.json`. You review it before Ralph starts. The orchestrator handles complexity-based planning, execution, review gates, and targeted fixes automatically.
+
+### Path 3: Large Features (9+ stories)
+
+Fully automated end-to-end. No manual steps.
 
 ```bash
-# Using Amp (default)
-./scripts/ralph/ralph.sh [max_iterations]
-
-# Using Claude Code
-./scripts/ralph/ralph.sh --tool claude [max_iterations]
+./ralph.sh --tool claude --feature "Add task priority system with filtering and sorting"
 ```
 
-Default is 10 iterations. Use `--tool amp` or `--tool claude` to select your AI coding tool.
+Or from a file:
 
-Ralph will:
-1. Create a feature branch (from PRD `branchName`)
-2. Pick the highest priority story where `passes: false`
-3. Implement that single story
-4. Run quality checks (typecheck, tests)
-5. Commit if checks pass
-6. Update `prd.json` to mark story as `passes: true`
-7. Append learnings to `progress.txt`
-8. Repeat until all stories pass or max iterations reached
+```bash
+./ralph.sh --tool claude --feature-file tasks/my-feature-spec.md
+```
+
+This runs dual-PRD creation, phases with complexity-based planning, execution, and review gates without any human intervention. Use this when you trust the PRD generation to get it right, or when you want to kick off a run and walk away.
+
+### Skipping Steps
+
+```bash
+# Already have a phased prd.json, skip PRD creation
+./ralph.sh --tool claude --skip-dual-prd
+
+# Skip both PRD creation and per-phase planning (just execution + review)
+./ralph.sh --tool claude --skip-dual-prd --skip-planning
+```
+
+## How Multi-Phase Works
+
+```
+Feature Description
+     |
+     +--- PRD Author A (technical focus) ---+
+     |                                      |
+     +--- PRD Author B (UX focus) ---------+---> PRD Merger ---> prd.json
+                                                  (with phases)
+
+For each phase:
+     +--- Complexity Check (story count) ---+
+     |                                      |
+     | 1 story: skip planning               |
+     | 2+ stories: single planner           |
+     +--------------------------------------+
+                    |
+              Execution Loop  <-----+
+                    |               |
+              Phase Reviewer        |
+               /         \          |
+         Approved    Not Approved   |
+             |           |          |
+        Next Phase   Targeted Fix --+
+                     (only failed stories)
+```
+
+**Dual PRD Creation:** Two AI instances independently create PRDs with different lenses (technical depth vs user experience), then a third instance merges the best of both. Live output from both authors is streamed to the terminal with labeled prefixes.
+
+**Complexity-Based Planning:** Single-story phases skip planning entirely. Phases with two or more stories get a single balanced planner that considers both simplicity and robustness.
+
+**Phase Gates:** After each phase completes, a reviewer checks if the work matches the PRD, runs quality checks, and either approves or sends back for targeted fixes. On rejection, only the specific failed stories are reset and re-executed — passing stories are preserved.
+
+**Plan Injection:** Phase plans are prepended directly into worker prompts, guaranteeing workers use the plan guidance rather than relying on them to voluntarily read a file.
+
+**Rate Limit Handling:** All AI invocations detect rate limits automatically. When rate limited, Ralph parses the reset time from the error message and waits accordingly, then retries. The `--delay` flag adds a configurable pause between spawning instances to avoid hitting limits.
+
+**Run Metrics:** Each run produces a `ralph-run-summary.json` with iteration counts, planning instances, and rejections per phase — enabling evidence-based optimization.
+
+## CLI Reference
+
+```bash
+./ralph.sh [OPTIONS] [max_iterations_per_phase]
+
+Options:
+  --tool amp|claude           AI tool to use (default: amp)
+  --feature "description"     Feature description for dual-PRD creation
+  --feature-file path         File containing feature description
+  --skip-dual-prd             Skip dual-PRD creation, use existing prd.json
+  --skip-planning             Skip planning, go straight to execution
+  --max-plan-retries N        Max re-planning rounds if review fails (default: 2)
+  --delay N                   Seconds between spawning AI instances (default: 5)
+  --max-retries N             Max retries when rate limited (default: 3)
+  --conservative              Max throttling: 30s delay between instances
+```
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `ralph.sh` | The bash loop that spawns fresh AI instances (supports `--tool amp` or `--tool claude`) |
-| `prompt.md` | Prompt template for Amp |
-| `CLAUDE.md` | Prompt template for Claude Code |
-| `prd.json` | User stories with `passes` status (the task list) |
-| `prd.json.example` | Example PRD format for reference |
+| `ralph.sh` | Orchestrator: state machine that spawns AI instances for PRD creation, planning, execution, and review |
+| `prompt.md` | Worker prompt template for Amp |
+| `CLAUDE.md` | Worker prompt template for Claude Code |
+| `prompts/` | Prompt templates for dual-PRD authors, merger, phase planner, phase reviewer, and fix planner |
+| `prd.json` | User stories with phases and `passes` status (the task list) |
+| `prd.json.example` | Example phased PRD format for reference |
 | `progress.txt` | Append-only learnings for future iterations |
-| `skills/prd/` | Skill for generating PRDs (works with Amp and Claude Code) |
-| `skills/ralph/` | Skill for converting PRDs to JSON (works with Amp and Claude Code) |
+| `skills/prd/` | Skill for generating PRDs |
+| `skills/ralph/` | Skill for converting PRDs to JSON (supports flat and phased formats) |
+| `skills/dual-prd/` | Skill for dual-author PRD creation (interactive version) |
+| `ralph-plans/` | Final phase plans (git-tracked, survives interruption) |
+| `.ralph-tmp/` | Temporary files for intermediate PRDs, draft plans, and review reports (gitignored) |
+| `ralph-run-summary.json` | Run metrics: iterations, planning instances, rejections per phase (gitignored) |
 | `.claude-plugin/` | Plugin manifest for Claude Code marketplace discovery |
 | `flowchart/` | Interactive visualization of how Ralph works |
 
@@ -167,6 +258,16 @@ Each iteration spawns a **new AI instance** (Amp or Claude Code) with clean cont
 - `progress.txt` (learnings and context)
 - `prd.json` (which stories are done)
 
+### Phases (Multi-Phase Mode)
+
+In phased mode, stories are grouped into phases. Each phase has:
+- **Complexity-based planning** before execution (skip for 1 story, single planner for 2+)
+- **Review gate** after execution (can reject and trigger targeted fixes)
+- Independent progress tracking
+- Plan injection directly into worker prompts
+
+Phase status flow: `pending` → `planning` → `in_progress` → `review` → `complete`
+
 ### Small Tasks
 
 Each PRD item should be small enough to complete in one context window. If a task is too big, the LLM runs out of context before finishing and produces poor code.
@@ -186,16 +287,12 @@ Too big (split these):
 
 After each iteration, Ralph updates the relevant `AGENTS.md` files with learnings. This is key because AI coding tools automatically read these files, so future iterations (and future human developers) benefit from discovered patterns, gotchas, and conventions.
 
-Examples of what to add to AGENTS.md:
-- Patterns discovered ("this codebase uses X for Y")
-- Gotchas ("do not forget to update Z when changing W")
-- Useful context ("the settings panel is in component X")
-
 ### Feedback Loops
 
 Ralph only works if there are feedback loops:
 - Typecheck catches type errors
 - Tests verify behavior
+- Phase review catches drift from the PRD
 - CI must stay green (broken code compounds across iterations)
 
 ### Browser Verification for UI Stories
@@ -204,22 +301,40 @@ Frontend stories must include "Verify in browser using dev-browser skill" in acc
 
 ### Stop Condition
 
-When all stories have `passes: true`, Ralph outputs `<promise>COMPLETE</promise>` and the loop exits.
+**Simple mode:** When all stories have `passes: true`, Ralph outputs `<promise>COMPLETE</promise>` and the loop exits.
+
+**Multi-phase mode:** When all stories in a phase pass, workers output `<promise>PHASE_COMPLETE</promise>`. The orchestrator then runs the review gate and advances to the next phase.
 
 ## Debugging
 
 Check current state:
 
 ```bash
-# See which stories are done
+# See which stories are done (phased format)
+cat prd.json | jq '.phases[].userStories[] | {id, title, passes}'
+
+# See which stories are done (legacy flat format)
 cat prd.json | jq '.userStories[] | {id, title, passes}'
+
+# See phase status
+cat prd.json | jq '.phases[] | {id, title, status, reviewApproved}'
+
+# See orchestration state
+cat prd.json | jq '.orchestration'
 
 # See learnings from previous iterations
 cat progress.txt
 
 # Check git history
 git log --oneline -10
+
+# Check temp files from dual-PRD or planning
+ls -la .ralph-tmp/
 ```
+
+## Backward Compatibility
+
+Ralph v2 is fully backward-compatible with v1 prd.json files. If your prd.json has a top-level `userStories` array (no `phases`), Ralph automatically runs in simple mode with the original loop behavior.
 
 ## Customizing the Prompt
 
