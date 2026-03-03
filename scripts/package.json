@@ -1,0 +1,9 @@
+{
+  "name": "ralph-api-scripts",
+  "private": true,
+  "type": "module",
+  "description": "Anthropic API wrapper for Ralph (--tool api)",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.33.0"
+  }
+}

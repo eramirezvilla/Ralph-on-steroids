@@ -18,7 +18,7 @@ cd flowchart && npm run build
 # Run Ralph with Amp (default)
 ./ralph.sh [max_iterations]
 
-# Run Ralph with Claude Code
+# Run Ralph with Claude Code (30s throttle by default to avoid rate limits)
 ./ralph.sh --tool claude [max_iterations]
 
 # Multi-phase with dual-PRD creation
@@ -30,11 +30,11 @@ cd flowchart && npm run build
 # Skip dual-PRD and planning
 ./ralph.sh --tool claude --skip-dual-prd --skip-planning
 
-# With throttling to avoid rate limits
-./ralph.sh --tool claude --feature "feature" --delay 10
+# Throttling: normal (5s), conservative (30s), minimal (60s), or --throttle N
+./ralph.sh --tool claude --feature "feature" --throttle conservative
 
-# Conservative mode (30s delay between instances)
-./ralph.sh --tool claude --feature "feature" --conservative
+# Anthropic API (separate quota; requires ANTHROPIC_API_KEY and: cd scripts && npm install)
+./ralph.sh --tool api --skip-dual-prd
 ```
 
 ## Key Files
@@ -69,7 +69,9 @@ Top-level `userStories[]` array. Ralph auto-detects and runs simple loop mode.
 - Workers receive the phase plan prepended to their prompt for guaranteed visibility
 - Planning is complexity-based: skip (1 story), single balanced planner (2+ stories)
 - Review rejections use targeted fix planning instead of full re-plan — only failed stories are reset
-- Rate limits are auto-detected and Ralph waits for the reset time before retrying
-- `--delay N` throttles spawning of instances, `--conservative` uses 30s delays
+- Rate limits are auto-detected and Ralph waits for the reset time (or "in N minutes") before retrying
+- With `--tool claude`, if rate limited and the API is configured, Ralph auto-switches to the Anthropic API for the rest of the run
+- `--throttle normal|conservative|minimal|N` sets delay between instances; Claude Code defaults to 30s
+- `--tool api` uses the Anthropic API (usage-based; requires ANTHROPIC_API_KEY and `cd scripts && npm install`)
 - All AI processes cd to SCRIPT_DIR before running, so relative paths in prompts work correctly
 - Run metrics are written to `ralph-run-summary.json` on completion

@@ -3,15 +3,19 @@
 # Usage: ./ralph.sh [OPTIONS] [max_iterations_per_phase]
 #
 # Options:
-#   --tool amp|claude           AI tool to use (default: amp)
-#   --feature "description"     Feature description for dual-PRD creation
-#   --feature-file path         File containing feature description
-#   --skip-dual-prd             Skip dual-PRD creation, use existing prd.json
-#   --skip-planning             Skip planning, go straight to execution
-#   --max-plan-retries N        Max re-planning rounds if review fails (default: 2)
-#   --delay N                   Seconds to wait between spawning instances (default: 5)
-#   --max-retries N             Max retries when rate limited (default: 3)
-#   --conservative              Max throttling: 30s delay between instances
+#   Run mode:
+#     --feature "description"     Feature description (or path to file) for dual-PRD
+#     --feature-file path         (Deprecated) Use --feature path instead
+#     --skip-dual-prd             Skip dual-PRD creation, use existing prd.json
+#     --skip-planning             Skip planning, go straight to execution
+#   Backend / throttling:
+#     --tool amp|claude|api       AI tool (default: amp). claude uses 30s throttle by default
+#     --throttle PRESET|N        normal (5s), conservative (30s), minimal (60s), or seconds
+#     --delay N                  (Deprecated) Use --throttle N
+#     --conservative             (Deprecated) Use --throttle conservative
+#   Advanced:
+#     --max-plan-retries N       Max re-planning rounds if review fails (default: 2)
+#     --max-retries N            Max retries when rate limited (default: 3)
 
 set -e
 
@@ -24,6 +28,7 @@ FEATURE_DESC=""
 FEATURE_FILE=""
 MAX_PLAN_RETRIES=2
 INSTANCE_DELAY=5
+THROTTLE_SET=false
 MAX_RATE_LIMIT_RETRIES=3
 
 while [[ $# -gt 0 ]]; do
@@ -68,12 +73,49 @@ while [[ $# -gt 0 ]]; do
       MAX_PLAN_RETRIES="${1#*=}"
       shift
       ;;
+    --throttle)
+      case "$2" in
+        normal)   INSTANCE_DELAY=5 ;;
+        conservative) INSTANCE_DELAY=30 ;;
+        minimal)   INSTANCE_DELAY=60 ;;
+        *)
+          if [[ "$2" =~ ^[0-9]+$ ]]; then
+            INSTANCE_DELAY="$2"
+          else
+            echo "Error: --throttle must be normal, conservative, minimal, or a number (seconds)."
+            exit 1
+          fi
+          ;;
+      esac
+      THROTTLE_SET=true
+      shift 2
+      ;;
+    --throttle=*)
+      VAL="${1#*=}"
+      case "$VAL" in
+        normal)   INSTANCE_DELAY=5 ;;
+        conservative) INSTANCE_DELAY=30 ;;
+        minimal)   INSTANCE_DELAY=60 ;;
+        *)
+          if [[ "$VAL" =~ ^[0-9]+$ ]]; then
+            INSTANCE_DELAY="$VAL"
+          else
+            echo "Error: --throttle must be normal, conservative, minimal, or a number (seconds)."
+            exit 1
+          fi
+          ;;
+      esac
+      THROTTLE_SET=true
+      shift
+      ;;
     --delay)
       INSTANCE_DELAY="$2"
+      THROTTLE_SET=true
       shift 2
       ;;
     --delay=*)
       INSTANCE_DELAY="${1#*=}"
+      THROTTLE_SET=true
       shift
       ;;
     --max-retries)
@@ -86,6 +128,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --conservative)
       INSTANCE_DELAY=30
+      THROTTLE_SET=true
       shift
       ;;
     *)
@@ -97,19 +140,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Tool-aware default: when using Claude Code and user did not set throttle, use conservative (30s)
+if [[ "$TOOL" == "claude" && "$THROTTLE_SET" == "false" ]]; then
+  INSTANCE_DELAY=30
+fi
+
 # Validate tool choice
-if [[ "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
-  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'claude'."
+if [[ "$TOOL" != "amp" && "$TOOL" != "claude" && "$TOOL" != "api" ]]; then
+  echo "Error: Invalid tool '$TOOL'. Must be 'amp', 'claude', or 'api'."
   exit 1
 fi
 
-# Load feature description from file if specified
+# Load feature description: from --feature-file (deprecated), or from --feature if it's a path
 if [[ -n "$FEATURE_FILE" && -z "$FEATURE_DESC" ]]; then
+  echo "Note: --feature-file is deprecated. Use --feature path instead." >&2
   if [[ ! -f "$FEATURE_FILE" ]]; then
     echo "Error: Feature file not found: $FEATURE_FILE"
     exit 1
   fi
   FEATURE_DESC=$(cat "$FEATURE_FILE")
+fi
+
+# If --feature looks like a file path (@path or existing path), read from file
+if [[ -n "$FEATURE_DESC" ]]; then
+  FEATURE_PATH=""
+  if [[ "$FEATURE_DESC" == @* ]]; then
+    FEATURE_PATH="${FEATURE_DESC#@}"
+  elif [[ -f "$FEATURE_DESC" ]]; then
+    FEATURE_PATH="$FEATURE_DESC"
+  fi
+  if [[ -n "$FEATURE_PATH" ]]; then
+    if [[ ! -f "$FEATURE_PATH" ]]; then
+      echo "Error: Feature file not found: $FEATURE_PATH"
+      exit 1
+    fi
+    FEATURE_DESC=$(cat "$FEATURE_PATH")
+  fi
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -120,6 +186,22 @@ LAST_BRANCH_FILE="$SCRIPT_DIR/.last-branch"
 TEMP_DIR="$SCRIPT_DIR/.ralph-tmp"
 PLANS_DIR="$SCRIPT_DIR/ralph-plans"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
+
+# When using --tool api, ensure wrapper script and deps exist
+if [[ "$TOOL" == "api" ]]; then
+  if [[ ! -f "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" ]]; then
+    echo "Error: --tool api requires scripts/ralph-anthropic-api.mjs. Not found."
+    exit 1
+  fi
+  if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+    echo "Error: --tool api requires ANTHROPIC_API_KEY to be set."
+    exit 1
+  fi
+  if [[ ! -d "$SCRIPT_DIR/scripts/node_modules/@anthropic-ai/sdk" ]]; then
+    echo "Error: --tool api requires npm install in scripts/. Run: cd scripts && npm install"
+    exit 1
+  fi
+fi
 
 mkdir -p "$TEMP_DIR"
 mkdir -p "$PLANS_DIR"
@@ -199,6 +281,21 @@ EOFJSON
 
 # === HELPER FUNCTIONS ===
 
+# Return 0 if Anthropic API can be used (for fallback when Claude Code is rate limited)
+api_fallback_available() {
+  [[ -n "$ANTHROPIC_API_KEY" ]] && \
+    [[ -f "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" ]] && \
+    [[ -d "$SCRIPT_DIR/scripts/node_modules/@anthropic-ai/sdk" ]]
+}
+
+# If using Claude Code and API is available, switch to API for the rest of this run
+maybe_switch_to_api() {
+  if [[ "$TOOL" == "claude" ]] && api_fallback_available; then
+    TOOL="api"
+    echo "Claude Code rate limited — switching to Anthropic API for the rest of this run."
+  fi
+}
+
 RATE_LIMIT_PATTERNS="hit your limit|rate limit|usage limit|limit resets|too many requests|overloaded|Rate limit reached"
 
 # Calculate seconds until a given time like "10pm" or "10:00 PM"
@@ -236,18 +333,50 @@ calculate_wait_until() {
   echo "$WAIT"
 }
 
+# Parse "in N minutes" or "in N seconds" from output. Echo seconds (capped at 3600) or empty.
+parse_in_minutes_seconds() {
+  local OUTPUT="$1"
+  local LINE
+  LINE=$(echo "$OUTPUT" | grep -oiE '(resets? )?in [0-9]+ (minute|second)s?' | head -1)
+  if [[ -z "$LINE" ]]; then
+    return
+  fi
+  local N
+  N=$(echo "$LINE" | grep -oE '[0-9]+' | head -1)
+  if [[ -z "$N" ]]; then
+    return
+  fi
+  if echo "$LINE" | grep -qi 'minute'; then
+    N=$((N * 60))
+  fi
+  # Cap at 1 hour
+  if [[ "$N" -gt 3600 ]]; then N=3600; fi
+  echo "$N"
+}
+
 # Check if output contains rate limit indicators. Returns 0 if rate limited.
 check_rate_limit() {
   local OUTPUT="$1"
   local LABEL="${2:-instance}"
 
   if echo "$OUTPUT" | grep -qiE "$RATE_LIMIT_PATTERNS"; then
-    # Try to parse reset time from output (e.g., "resets 10pm", "resets at 10:00 PM")
+    local WAIT_SECS
+
+    # Try "in N minutes" / "in N seconds" first
+    WAIT_SECS=$(parse_in_minutes_seconds "$OUTPUT")
+    if [[ -n "$WAIT_SECS" && "$WAIT_SECS" -gt 0 ]]; then
+      local WAIT_MINS=$((WAIT_SECS / 60))
+      echo ""
+      echo "RATE LIMITED on $LABEL. Waiting ${WAIT_SECS}s (~${WAIT_MINS}m)..."
+      sleep "$WAIT_SECS"
+      return 0
+    fi
+
+    # Try reset time (e.g., "resets 10pm", "resets at 10:00 PM")
     local RESET_HOUR
     RESET_HOUR=$(echo "$OUTPUT" | grep -oiE 'resets? (at )?[0-9]{1,2}(:[0-9]{2})?\s*(am|pm)' | grep -oiE '[0-9]{1,2}(:[0-9]{2})?\s*(am|pm)' | head -1)
 
     if [[ -n "$RESET_HOUR" ]]; then
-      local WAIT_SECS
       WAIT_SECS=$(calculate_wait_until "$RESET_HOUR")
       local WAIT_MINS=$((WAIT_SECS / 60))
       echo ""
@@ -267,6 +396,8 @@ run_instance() {
   local PROMPT_FILE="$1"
   if [[ "$TOOL" == "amp" ]]; then
     (cd "$SCRIPT_DIR" && cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr)
+  elif [[ "$TOOL" == "api" ]]; then
+    (cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$PROMPT_FILE" 2>&1 | tee /dev/stderr)
   else
     (cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr)
   fi
@@ -288,6 +419,7 @@ run_instance_with_retry() {
       return 0
     fi
 
+    maybe_switch_to_api
     ATTEMPT=$((ATTEMPT + 1))
     echo "Retrying $LABEL (attempt $((ATTEMPT + 1)) of $MAX_RATE_LIMIT_RETRIES)..."
   done
@@ -302,6 +434,8 @@ run_instance_bg() {
   local OUTPUT_FILE="$2"
   if [[ "$TOOL" == "amp" ]]; then
     (cd "$SCRIPT_DIR" && cat "$PROMPT_FILE" | amp --dangerously-allow-all > "$OUTPUT_FILE" 2>&1) &
+  elif [[ "$TOOL" == "api" ]]; then
+    (cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$PROMPT_FILE" > "$OUTPUT_FILE" 2>&1) &
   else
     (cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$PROMPT_FILE" > "$OUTPUT_FILE" 2>&1) &
   fi
@@ -316,6 +450,7 @@ check_bg_rate_limit_and_retry() {
 
   if [[ -f "$OUTPUT_FILE" ]] && check_rate_limit "$(cat "$OUTPUT_FILE")" "$LABEL"; then
     echo "Retrying $LABEL after rate limit wait..."
+    maybe_switch_to_api
     run_instance_bg "$PROMPT_FILE" "$OUTPUT_FILE"
     return 0  # was retried
   fi
@@ -653,6 +788,8 @@ do_execute_phase() {
 
     if [[ "$TOOL" == "amp" ]]; then
       OUTPUT=$(cd "$SCRIPT_DIR" && cat "$WORKER_PROMPT" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    elif [[ "$TOOL" == "api" ]]; then
+      OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
     else
       OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
     fi
@@ -660,9 +797,12 @@ do_execute_phase() {
     # Check for rate limiting — wait and retry this iteration
     if check_rate_limit "$OUTPUT" "Worker (Phase $((PHASE_IDX + 1)), Iter $i)"; then
       echo "Retrying iteration after rate limit wait..."
+      maybe_switch_to_api
       # Re-run this iteration after the wait
       if [[ "$TOOL" == "amp" ]]; then
         OUTPUT=$(cd "$SCRIPT_DIR" && cat "$WORKER_PROMPT" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+      elif [[ "$TOOL" == "api" ]]; then
+        OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
       else
         OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
       fi
@@ -768,6 +908,8 @@ do_legacy_loop() {
 
     if [[ "$TOOL" == "amp" ]]; then
       OUTPUT=$(cd "$SCRIPT_DIR" && cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    elif [[ "$TOOL" == "api" ]]; then
+      OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
     else
       OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
     fi
@@ -775,8 +917,11 @@ do_legacy_loop() {
     # Check for rate limiting — wait and retry
     if check_rate_limit "$OUTPUT" "Legacy Worker (Iter $i)"; then
       echo "Retrying iteration after rate limit wait..."
+      maybe_switch_to_api
       if [[ "$TOOL" == "amp" ]]; then
         OUTPUT=$(cd "$SCRIPT_DIR" && cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+      elif [[ "$TOOL" == "api" ]]; then
+        OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
       else
         OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
       fi

@@ -2,7 +2,7 @@
 
 ![Ralph](ralph.webp)
 
-Ralph is an autonomous AI agent loop that runs AI coding tools ([Amp](https://ampcode.com) or [Claude Code](https://docs.anthropic.com/en/docs/claude-code)) repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
+Ralph is an autonomous AI agent loop that runs AI coding tools ([Amp](https://ampcode.com), [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or the [Anthropic API](https://docs.anthropic.com/en/api)) repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context. Memory persists via git history, `progress.txt`, and `prd.json`.
 
 Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
@@ -10,9 +10,10 @@ Based on [Geoffrey Huntley's Ralph pattern](https://ghuntley.com/ralph/).
 
 ## Prerequisites
 
-- One of the following AI coding tools installed and authenticated:
+- One of the following AI backends:
   - [Amp CLI](https://ampcode.com) (default)
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`)
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code`) — uses 30s throttle by default to reduce rate limits
+  - Anthropic API (`--tool api`) — usage-based billing, separate from Claude Code; requires `ANTHROPIC_API_KEY` and `cd scripts && npm install`
 - `jq` installed (`brew install jq` on macOS)
 - A git repository for your project
 
@@ -202,24 +203,53 @@ For each phase:
 
 ```bash
 ./ralph.sh [OPTIONS] [max_iterations_per_phase]
-
-Options:
-  --tool amp|claude           AI tool to use (default: amp)
-  --feature "description"     Feature description for dual-PRD creation
-  --feature-file path         File containing feature description
-  --skip-dual-prd             Skip dual-PRD creation, use existing prd.json
-  --skip-planning             Skip planning, go straight to execution
-  --max-plan-retries N        Max re-planning rounds if review fails (default: 2)
-  --delay N                   Seconds between spawning AI instances (default: 5)
-  --max-retries N             Max retries when rate limited (default: 3)
-  --conservative              Max throttling: 30s delay between instances
 ```
+
+**Common invocations**
+
+```bash
+# Claude Code (safe default: 30s between calls to avoid rate limits)
+./ralph.sh --tool claude --skip-dual-prd
+
+# With a new feature from scratch
+./ralph.sh --tool claude --feature "Add task priority and filtering"
+
+# Anthropic API (separate quota; set ANTHROPIC_API_KEY and run: cd scripts && npm install)
+./ralph.sh --tool api --skip-dual-prd
+```
+
+**Options**
+
+| Group | Option | Description |
+|-------|--------|-------------|
+| **Run mode** | `--feature "desc"` or `--feature @path` | Feature for dual-PRD, or path to file |
+| | `--skip-dual-prd` | Use existing prd.json |
+| | `--skip-planning` | Skip planning, go straight to execution |
+| **Backend / throttle** | `--tool amp\|claude\|api` | AI backend (default: amp). `claude` uses 30s throttle by default |
+| | `--throttle normal\|conservative\|minimal\|N` | Delay between calls: normal=5s, conservative=30s, minimal=60s, or N seconds |
+| **Advanced** | `--max-plan-retries N` | Max re-plan rounds if review fails (default: 2) |
+| | `--max-retries N` | Max retries when rate limited (default: 3) |
+
+Deprecated: `--feature-file` (use `--feature @path`); `--delay N` (use `--throttle N`); `--conservative` (use `--throttle conservative`).
+
+### Using the Anthropic API (`--tool api`)
+
+The API backend uses your own Anthropic API key and has **separate rate limits and usage-based billing** from Claude Code. Useful if you hit Claude Code limits or want to reserve Claude Code for interactive use.
+
+1. Set `ANTHROPIC_API_KEY` (from [console.anthropic.com](https://console.anthropic.com)).
+2. Install the wrapper deps: `cd scripts && npm install`
+3. Run: `./ralph.sh --tool api [options]`
+
+Optional: `ANTHROPIC_MODEL` (default: `claude-sonnet-4-20250514`).
+
+**Auto-switch on rate limit:** When you run with `--tool claude`, if Ralph hits a Claude Code rate limit and the API is set up (same steps above), it will automatically switch to the Anthropic API for the rest of that run so the job can continue.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `ralph.sh` | Orchestrator: state machine that spawns AI instances for PRD creation, planning, execution, and review |
+| `scripts/` | Anthropic API wrapper for `--tool api`; run `npm install` in scripts/ before using |
 | `prompt.md` | Worker prompt template for Amp |
 | `CLAUDE.md` | Worker prompt template for Claude Code |
 | `prompts/` | Prompt templates for dual-PRD authors, merger, phase planner, phase reviewer, and fix planner |
