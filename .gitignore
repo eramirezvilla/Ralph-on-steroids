@@ -1,3 +1,6 @@
+# Scripts deps (run: cd scripts && npm install)
+scripts/node_modules/
+
 # Ralph working files (generated during runs)
 prd.json
 progress.txt

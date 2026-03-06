@@ -3,27 +3,23 @@
 # Usage: ./ralph.sh [OPTIONS] [max_iterations_per_phase]
 #
 # Options:
-#   --tool amp|claude           AI tool to use (default: amp)
-#   --feature "description"     Feature description for dual-PRD creation
-#   --feature-file path         File containing feature description
-#   --skip-dual-prd             Skip dual-PRD creation, use existing prd.json
-#   --skip-planning             Skip planning, go straight to execution
-#   --max-plan-retries N        Max re-planning rounds if review fails (default: 2)
-#   --delay N                   Seconds to wait between spawning instances (default: 5)
-#   --max-retries N             Max retries when rate limited (default: 3)
-#   --conservative              Max throttling: 30s delay between instances
+#   --feature "description"      Feature for dual-PRD (or --feature @path to read from file)
+#   --skip-dual-prd              Use existing prd.json, skip dual-PRD creation
+#   --skip-planning              Skip planning, go straight to execution
+#   --tool claude|api            AI backend (default: claude; 30s throttle by default)
+#   --throttle normal|conservative|minimal   Delay between calls (default for claude: conservative)
 
 set -e
 
 # === ARGUMENT PARSING ===
-TOOL="amp"
+TOOL="claude"
 MAX_ITERATIONS=10
 SKIP_DUAL_PRD=false
 SKIP_PLANNING=false
 FEATURE_DESC=""
-FEATURE_FILE=""
-MAX_PLAN_RETRIES=2
 INSTANCE_DELAY=5
+THROTTLE_SET=false
+MAX_PLAN_RETRIES=2
 MAX_RATE_LIMIT_RETRIES=3
 
 while [[ $# -gt 0 ]]; do
@@ -44,14 +40,6 @@ while [[ $# -gt 0 ]]; do
       FEATURE_DESC="${1#*=}"
       shift
       ;;
-    --feature-file)
-      FEATURE_FILE="$2"
-      shift 2
-      ;;
-    --feature-file=*)
-      FEATURE_FILE="${1#*=}"
-      shift
-      ;;
     --skip-dual-prd)
       SKIP_DUAL_PRD=true
       shift
@@ -60,32 +48,31 @@ while [[ $# -gt 0 ]]; do
       SKIP_PLANNING=true
       shift
       ;;
-    --max-plan-retries)
-      MAX_PLAN_RETRIES="$2"
+    --throttle)
+      case "$2" in
+        normal)   INSTANCE_DELAY=5 ;;
+        conservative) INSTANCE_DELAY=30 ;;
+        minimal)   INSTANCE_DELAY=60 ;;
+        *)
+          echo "Error: --throttle must be normal, conservative, or minimal."
+          exit 1
+          ;;
+      esac
+      THROTTLE_SET=true
       shift 2
       ;;
-    --max-plan-retries=*)
-      MAX_PLAN_RETRIES="${1#*=}"
-      shift
-      ;;
-    --delay)
-      INSTANCE_DELAY="$2"
-      shift 2
-      ;;
-    --delay=*)
-      INSTANCE_DELAY="${1#*=}"
-      shift
-      ;;
-    --max-retries)
-      MAX_RATE_LIMIT_RETRIES="$2"
-      shift 2
-      ;;
-    --max-retries=*)
-      MAX_RATE_LIMIT_RETRIES="${1#*=}"
-      shift
-      ;;
-    --conservative)
-      INSTANCE_DELAY=30
+    --throttle=*)
+      VAL="${1#*=}"
+      case "$VAL" in
+        normal)   INSTANCE_DELAY=5 ;;
+        conservative) INSTANCE_DELAY=30 ;;
+        minimal)   INSTANCE_DELAY=60 ;;
+        *)
+          echo "Error: --throttle must be normal, conservative, or minimal."
+          exit 1
+          ;;
+      esac
+      THROTTLE_SET=true
       shift
       ;;
     *)
@@ -97,19 +84,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Tool-aware default: when using Claude Code and user did not set throttle, use conservative (30s)
+if [[ "$TOOL" == "claude" && "$THROTTLE_SET" == "false" ]]; then
+  INSTANCE_DELAY=30
+fi
+
 # Validate tool choice
-if [[ "$TOOL" != "amp" && "$TOOL" != "claude" ]]; then
-  echo "Error: Invalid tool '$TOOL'. Must be 'amp' or 'claude'."
+if [[ "$TOOL" != "claude" && "$TOOL" != "api" ]]; then
+  echo "Error: Invalid tool '$TOOL'. Must be 'claude' or 'api'."
   exit 1
 fi
 
-# Load feature description from file if specified
-if [[ -n "$FEATURE_FILE" && -z "$FEATURE_DESC" ]]; then
-  if [[ ! -f "$FEATURE_FILE" ]]; then
-    echo "Error: Feature file not found: $FEATURE_FILE"
-    exit 1
+# If --feature looks like a file path (@path or existing path), read from file
+if [[ -n "$FEATURE_DESC" ]]; then
+  FEATURE_PATH=""
+  if [[ "$FEATURE_DESC" == @* ]]; then
+    FEATURE_PATH="${FEATURE_DESC#@}"
+  elif [[ -f "$FEATURE_DESC" ]]; then
+    FEATURE_PATH="$FEATURE_DESC"
   fi
-  FEATURE_DESC=$(cat "$FEATURE_FILE")
+  if [[ -n "$FEATURE_PATH" ]]; then
+    if [[ ! -f "$FEATURE_PATH" ]]; then
+      echo "Error: Feature file not found: $FEATURE_PATH"
+      exit 1
+    fi
+    FEATURE_DESC=$(cat "$FEATURE_PATH")
+  fi
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -121,6 +121,22 @@ TEMP_DIR="$SCRIPT_DIR/.ralph-tmp"
 PLANS_DIR="$SCRIPT_DIR/ralph-plans"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 
+# When using --tool api, ensure wrapper script and deps exist
+if [[ "$TOOL" == "api" ]]; then
+  if [[ ! -f "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" ]]; then
+    echo "Error: --tool api requires scripts/ralph-anthropic-api.mjs. Not found."
+    exit 1
+  fi
+  if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+    echo "Error: --tool api requires ANTHROPIC_API_KEY to be set."
+    exit 1
+  fi
+  if [[ ! -d "$SCRIPT_DIR/scripts/node_modules/@anthropic-ai/sdk" ]]; then
+    echo "Error: --tool api requires npm install in scripts/. Run: cd scripts && npm install"
+    exit 1
+  fi
+fi
+
 mkdir -p "$TEMP_DIR"
 mkdir -p "$PLANS_DIR"
 
@@ -128,7 +144,6 @@ mkdir -p "$PLANS_DIR"
 RUN_START_TIME=$(date +%s)
 TOTAL_WORKER_ITERATIONS=0
 TOTAL_PLANNING_INSTANCES=0
-TOTAL_REVIEW_REJECTIONS=0
 
 # Per-phase metrics stored as files in TEMP_DIR (bash 3.2 compatible)
 get_phase_metric() {
@@ -189,7 +204,6 @@ write_run_summary() {
   "phasesCompleted": $PHASES_COMPLETED,
   "totalWorkerIterations": $TOTAL_WORKER_ITERATIONS,
   "totalPlanningInstances": $TOTAL_PLANNING_INSTANCES,
-  "totalReviewRejections": $TOTAL_REVIEW_REJECTIONS,
   "perPhase": $PER_PHASE_JSON
 }
 EOFJSON
@@ -198,6 +212,21 @@ EOFJSON
 }
 
 # === HELPER FUNCTIONS ===
+
+# Return 0 if Anthropic API can be used (for fallback when Claude Code is rate limited)
+api_fallback_available() {
+  [[ -n "$ANTHROPIC_API_KEY" ]] && \
+    [[ -f "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" ]] && \
+    [[ -d "$SCRIPT_DIR/scripts/node_modules/@anthropic-ai/sdk" ]]
+}
+
+# If using Claude Code and API is available, switch to API for the rest of this run
+maybe_switch_to_api() {
+  if [[ "$TOOL" == "claude" ]] && api_fallback_available; then
+    TOOL="api"
+    echo "Claude Code rate limited — switching to Anthropic API for the rest of this run."
+  fi
+}
 
 RATE_LIMIT_PATTERNS="hit your limit|rate limit|usage limit|limit resets|too many requests|overloaded|Rate limit reached"
 
@@ -236,18 +265,50 @@ calculate_wait_until() {
   echo "$WAIT"
 }
 
+# Parse "in N minutes" or "in N seconds" from output. Echo seconds (capped at 3600) or empty.
+parse_in_minutes_seconds() {
+  local OUTPUT="$1"
+  local LINE
+  LINE=$(echo "$OUTPUT" | grep -oiE '(resets? )?in [0-9]+ (minute|second)s?' | head -1)
+  if [[ -z "$LINE" ]]; then
+    return
+  fi
+  local N
+  N=$(echo "$LINE" | grep -oE '[0-9]+' | head -1)
+  if [[ -z "$N" ]]; then
+    return
+  fi
+  if echo "$LINE" | grep -qi 'minute'; then
+    N=$((N * 60))
+  fi
+  # Cap at 1 hour
+  if [[ "$N" -gt 3600 ]]; then N=3600; fi
+  echo "$N"
+}
+
 # Check if output contains rate limit indicators. Returns 0 if rate limited.
 check_rate_limit() {
   local OUTPUT="$1"
   local LABEL="${2:-instance}"
 
   if echo "$OUTPUT" | grep -qiE "$RATE_LIMIT_PATTERNS"; then
-    # Try to parse reset time from output (e.g., "resets 10pm", "resets at 10:00 PM")
+    local WAIT_SECS
+
+    # Try "in N minutes" / "in N seconds" first
+    WAIT_SECS=$(parse_in_minutes_seconds "$OUTPUT")
+    if [[ -n "$WAIT_SECS" && "$WAIT_SECS" -gt 0 ]]; then
+      local WAIT_MINS=$((WAIT_SECS / 60))
+      echo ""
+      echo "RATE LIMITED on $LABEL. Waiting ${WAIT_SECS}s (~${WAIT_MINS}m)..."
+      sleep "$WAIT_SECS"
+      return 0
+    fi
+
+    # Try reset time (e.g., "resets 10pm", "resets at 10:00 PM")
     local RESET_HOUR
     RESET_HOUR=$(echo "$OUTPUT" | grep -oiE 'resets? (at )?[0-9]{1,2}(:[0-9]{2})?\s*(am|pm)' | grep -oiE '[0-9]{1,2}(:[0-9]{2})?\s*(am|pm)' | head -1)
 
     if [[ -n "$RESET_HOUR" ]]; then
-      local WAIT_SECS
       WAIT_SECS=$(calculate_wait_until "$RESET_HOUR")
       local WAIT_MINS=$((WAIT_SECS / 60))
       echo ""
@@ -265,8 +326,8 @@ check_rate_limit() {
 
 run_instance() {
   local PROMPT_FILE="$1"
-  if [[ "$TOOL" == "amp" ]]; then
-    (cd "$SCRIPT_DIR" && cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr)
+  if [[ "$TOOL" == "api" ]]; then
+    (cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$PROMPT_FILE" 2>&1 | tee /dev/stderr)
   else
     (cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr)
   fi
@@ -288,6 +349,7 @@ run_instance_with_retry() {
       return 0
     fi
 
+    maybe_switch_to_api
     ATTEMPT=$((ATTEMPT + 1))
     echo "Retrying $LABEL (attempt $((ATTEMPT + 1)) of $MAX_RATE_LIMIT_RETRIES)..."
   done
@@ -300,8 +362,8 @@ run_instance_with_retry() {
 run_instance_bg() {
   local PROMPT_FILE="$1"
   local OUTPUT_FILE="$2"
-  if [[ "$TOOL" == "amp" ]]; then
-    (cd "$SCRIPT_DIR" && cat "$PROMPT_FILE" | amp --dangerously-allow-all > "$OUTPUT_FILE" 2>&1) &
+  if [[ "$TOOL" == "api" ]]; then
+    (cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$PROMPT_FILE" > "$OUTPUT_FILE" 2>&1) &
   else
     (cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$PROMPT_FILE" > "$OUTPUT_FILE" 2>&1) &
   fi
@@ -316,6 +378,7 @@ check_bg_rate_limit_and_retry() {
 
   if [[ -f "$OUTPUT_FILE" ]] && check_rate_limit "$(cat "$OUTPUT_FILE")" "$LABEL"; then
     echo "Retrying $LABEL after rate limit wait..."
+    maybe_switch_to_api
     run_instance_bg "$PROMPT_FILE" "$OUTPUT_FILE"
     return 0  # was retried
   fi
@@ -456,90 +519,34 @@ init_progress() {
   fi
 }
 
-# === DUAL PRD CREATION ===
+# === PRD CREATION (single call) ===
 
-do_dual_prd() {
+do_single_prd() {
   echo ""
   echo "==============================================================="
-  echo "  DUAL PRD CREATION"
+  echo "  PRD CREATION"
   echo "==============================================================="
 
   if [[ -z "$FEATURE_DESC" ]]; then
     echo "Error: No feature description provided."
-    echo "Use --feature \"description\" or --feature-file path"
+    echo "Use --feature \"description\" or --feature @path"
     exit 1
   fi
 
-  # Generate Author A prompt (technical depth)
-  generate_prompt "$PROMPTS_DIR/prd-author.md" "$TEMP_DIR/prd-author-a-prompt.md"
-  sed -i '' 's|{{LENS}}|Focus on TECHNICAL DEPTH. Prioritize: database schema design, API contracts, data flow, error handling, performance considerations, edge cases in backend logic. Think about what could go wrong technically and what the non-obvious dependencies are.|g' "$TEMP_DIR/prd-author-a-prompt.md"
-  sed -i '' 's|{{OUTPUT_FILE}}|.ralph-tmp/prd-v1.md|g' "$TEMP_DIR/prd-author-a-prompt.md"
-  sed -i '' 's|{{AUTHOR_ID}}|Author A (Technical)|g' "$TEMP_DIR/prd-author-a-prompt.md"
+  generate_prompt "$PROMPTS_DIR/prd-single.md" "$TEMP_DIR/prd-single-prompt.md"
 
-  # Generate Author B prompt (user experience)
-  generate_prompt "$PROMPTS_DIR/prd-author.md" "$TEMP_DIR/prd-author-b-prompt.md"
-  sed -i '' 's|{{LENS}}|Focus on USER EXPERIENCE. Prioritize: user workflows, UI edge cases, accessibility, error messages, loading states, empty states, progressive disclosure. Think about what the user actually needs and what the most common user journeys are.|g' "$TEMP_DIR/prd-author-b-prompt.md"
-  sed -i '' 's|{{OUTPUT_FILE}}|.ralph-tmp/prd-v2.md|g' "$TEMP_DIR/prd-author-b-prompt.md"
-  sed -i '' 's|{{AUTHOR_ID}}|Author B (UX)|g' "$TEMP_DIR/prd-author-b-prompt.md"
-
-  echo "Spawning PRD Author A (technical focus)..."
-  run_instance_bg "$TEMP_DIR/prd-author-a-prompt.md" "$TEMP_DIR/prd-author-a-output.txt"
-  PID_A=$BG_PID
-  echo "  PID: $PID_A"
-
+  echo "Spawning PRD author (single call)..."
   throttle
+  OUTPUT=$(run_instance_with_retry "$TEMP_DIR/prd-single-prompt.md" "PRD (single)") || true
 
-  echo "Spawning PRD Author B (UX focus)..."
-  run_instance_bg "$TEMP_DIR/prd-author-b-prompt.md" "$TEMP_DIR/prd-author-b-output.txt"
-  PID_B=$BG_PID
-  echo "  PID: $PID_B"
-
-  echo "Waiting for both PRD authors to finish..."
-  wait_with_tailing "Author A" "$TEMP_DIR/prd-author-a-output.txt" "$PID_A" \
-                    "Author B" "$TEMP_DIR/prd-author-b-output.txt" "$PID_B"
-
-  # Check for rate limits and retry if needed
-  if check_bg_rate_limit_and_retry "$TEMP_DIR/prd-author-a-prompt.md" "$TEMP_DIR/prd-author-a-output.txt" "PRD Author A"; then
-    wait $BG_PID || true
-  fi
-  if check_bg_rate_limit_and_retry "$TEMP_DIR/prd-author-b-prompt.md" "$TEMP_DIR/prd-author-b-output.txt" "PRD Author B"; then
-    wait $BG_PID || true
-  fi
-
-  # Verify outputs exist
-  if [[ ! -f "$TEMP_DIR/prd-v1.md" ]]; then
-    echo "WARNING: PRD Author A did not produce output at .ralph-tmp/prd-v1.md"
-    echo "Check $TEMP_DIR/prd-author-a-output.txt for details"
-  fi
-  if [[ ! -f "$TEMP_DIR/prd-v2.md" ]]; then
-    echo "WARNING: PRD Author B did not produce output at .ralph-tmp/prd-v2.md"
-    echo "Check $TEMP_DIR/prd-author-b-output.txt for details"
-  fi
-
-  echo "Both PRD authors complete."
-}
-
-do_prd_merge() {
-  echo ""
-  echo "==============================================================="
-  echo "  PRD MERGE"
-  echo "==============================================================="
-
-  generate_prompt "$PROMPTS_DIR/prd-merger.md" "$TEMP_DIR/prd-merger-prompt.md"
-
-  echo "Spawning PRD Merger..."
-  throttle
-  OUTPUT=$(run_instance_with_retry "$TEMP_DIR/prd-merger-prompt.md" "PRD Merger") || true
-
-  if [ ! -f "$PRD_FILE" ]; then
-    echo "ERROR: PRD merger did not produce prd.json"
+  if [[ ! -f "$PRD_FILE" ]]; then
+    echo "ERROR: PRD author did not produce prd.json"
     exit 1
   fi
 
-  # Mark dual PRD as complete
   update_prd_field '.orchestration.dualPrdComplete = true'
 
-  echo "PRD merge complete. prd.json created with phases."
+  echo "PRD complete. prd.json created with phases."
 }
 
 # === PHASE PLANNING ===
@@ -629,11 +636,7 @@ do_execute_phase() {
     echo "--- Phase $((PHASE_IDX + 1)), Iteration $i of $MAX_ITERATIONS ($TOOL) ---"
 
     # Prepend phase plan to worker instructions
-    if [[ "$TOOL" == "amp" ]]; then
-      local BASE_PROMPT="$SCRIPT_DIR/prompt.md"
-    else
-      local BASE_PROMPT="$SCRIPT_DIR/CLAUDE.md"
-    fi
+    local BASE_PROMPT="$SCRIPT_DIR/CLAUDE.md"
 
     if [[ -f "$PLAN_FILE" ]]; then
       echo "## Phase Implementation Plan" > "$WORKER_PROMPT"
@@ -651,8 +654,8 @@ do_execute_phase() {
 
     throttle
 
-    if [[ "$TOOL" == "amp" ]]; then
-      OUTPUT=$(cd "$SCRIPT_DIR" && cat "$WORKER_PROMPT" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    if [[ "$TOOL" == "api" ]]; then
+      OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
     else
       OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
     fi
@@ -660,9 +663,10 @@ do_execute_phase() {
     # Check for rate limiting — wait and retry this iteration
     if check_rate_limit "$OUTPUT" "Worker (Phase $((PHASE_IDX + 1)), Iter $i)"; then
       echo "Retrying iteration after rate limit wait..."
+      maybe_switch_to_api
       # Re-run this iteration after the wait
-      if [[ "$TOOL" == "amp" ]]; then
-        OUTPUT=$(cd "$SCRIPT_DIR" && cat "$WORKER_PROMPT" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+      if [[ "$TOOL" == "api" ]]; then
+        OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
       else
         OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$WORKER_PROMPT" 2>&1 | tee /dev/stderr) || true
       fi
@@ -697,61 +701,6 @@ do_execute_phase() {
   return 1
 }
 
-# === PHASE REVIEW ===
-
-do_phase_review() {
-  local PHASE_IDX="$1"
-  local PHASE_TITLE
-  PHASE_TITLE=$(get_phase_field "$PHASE_IDX" "title")
-
-  echo ""
-  echo "==============================================================="
-  echo "  PHASE REVIEW: Phase $((PHASE_IDX + 1)) - $PHASE_TITLE"
-  echo "==============================================================="
-
-  update_prd_field ".phases[$PHASE_IDX].status = \"review\""
-  update_prd_field ".orchestration.status = \"phase_review\""
-
-  generate_prompt "$PROMPTS_DIR/phase-reviewer.md" "$TEMP_DIR/phase-reviewer-prompt.md"
-
-  echo "Spawning Phase Reviewer..."
-  throttle
-  OUTPUT=$(run_instance_with_retry "$TEMP_DIR/phase-reviewer-prompt.md" "Phase Reviewer") || true
-
-  local APPROVED
-  APPROVED=$(get_phase_field "$PHASE_IDX" "reviewApproved")
-  if [[ "$APPROVED" == "true" ]]; then
-    echo "Phase $((PHASE_IDX + 1)) APPROVED by reviewer."
-    return 0
-  else
-    echo "Phase $((PHASE_IDX + 1)) review flagged issues."
-    return 1
-  fi
-}
-
-# === TARGETED FIX ===
-
-do_targeted_fix() {
-  local PHASE_IDX="$1"
-  local PHASE_TITLE
-  PHASE_TITLE=$(get_phase_field "$PHASE_IDX" "title")
-
-  echo ""
-  echo "==============================================================="
-  echo "  TARGETED FIX: Phase $((PHASE_IDX + 1)) - $PHASE_TITLE"
-  echo "==============================================================="
-
-  update_prd_field ".phases[$PHASE_IDX].status = \"in_progress\""
-
-  generate_prompt "$PROMPTS_DIR/phase-fix-planner.md" "$TEMP_DIR/phase-fix-planner-prompt.md"
-
-  echo "Spawning Fix Planner..."
-  throttle
-  OUTPUT=$(run_instance_with_retry "$TEMP_DIR/phase-fix-planner-prompt.md" "Fix Planner") || true
-
-  echo "Targeted fix planning complete."
-}
-
 # === LEGACY MODE (flat prd.json without phases) ===
 
 do_legacy_loop() {
@@ -766,8 +715,8 @@ do_legacy_loop() {
 
     throttle
 
-    if [[ "$TOOL" == "amp" ]]; then
-      OUTPUT=$(cd "$SCRIPT_DIR" && cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+    if [[ "$TOOL" == "api" ]]; then
+      OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
     else
       OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
     fi
@@ -775,8 +724,9 @@ do_legacy_loop() {
     # Check for rate limiting — wait and retry
     if check_rate_limit "$OUTPUT" "Legacy Worker (Iter $i)"; then
       echo "Retrying iteration after rate limit wait..."
-      if [[ "$TOOL" == "amp" ]]; then
-        OUTPUT=$(cd "$SCRIPT_DIR" && cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+      maybe_switch_to_api
+      if [[ "$TOOL" == "api" ]]; then
+        OUTPUT=$(cd "$SCRIPT_DIR" && node "$SCRIPT_DIR/scripts/ralph-anthropic-api.mjs" "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
       else
         OUTPUT=$(cd "$SCRIPT_DIR" && claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
       fi
@@ -807,10 +757,9 @@ main() {
   # Archive previous run if branch changed
   archive_if_needed
 
-  # === STEP 1: Dual PRD Creation ===
+  # === STEP 1: PRD Creation ===
   if [[ "$SKIP_DUAL_PRD" == "false" && -n "$FEATURE_DESC" ]]; then
-    do_dual_prd
-    do_prd_merge
+    do_single_prd
   elif [[ "$SKIP_DUAL_PRD" == "false" && ! -f "$PRD_FILE" ]]; then
     echo "Error: No prd.json found and no --feature provided."
     echo "Either provide --feature \"description\" or --skip-dual-prd with an existing prd.json"
@@ -838,18 +787,9 @@ main() {
 
   echo "Found $TOTAL_PHASES phases in prd.json."
 
-  local PLAN_RETRIES=0
-  local LAST_PHASE_IDX=-1
-
   while true; do
     local PHASE_IDX
     PHASE_IDX=$(get_current_phase_index)
-
-    # Reset retry counter when advancing to a new phase
-    if [[ "$PHASE_IDX" != "$LAST_PHASE_IDX" ]]; then
-      PLAN_RETRIES=0
-      LAST_PHASE_IDX="$PHASE_IDX"
-    fi
 
     # Check if all phases are done
     if all_phases_complete; then
@@ -877,50 +817,21 @@ main() {
     echo "Phase $((PHASE_IDX + 1))/$TOTAL_PHASES: $PHASE_TITLE (status: $PHASE_STATUS)"
 
     # === Planning (unless skipped or already in_progress) ===
-    if [[ "$SKIP_PLANNING" == "false" && "$PHASE_STATUS" != "in_progress" && "$PHASE_STATUS" != "review" && "$PHASE_STATUS" != "complete" ]]; then
+    if [[ "$SKIP_PLANNING" == "false" && "$PHASE_STATUS" != "in_progress" && "$PHASE_STATUS" != "complete" ]]; then
       do_phase_planning "$PHASE_IDX"
     fi
 
     # === Execution ===
-    if [[ "$PHASE_STATUS" != "review" && "$PHASE_STATUS" != "complete" ]]; then
+    if [[ "$PHASE_STATUS" != "complete" ]]; then
       do_execute_phase "$PHASE_IDX" || true
     fi
 
-    # === Review ===
-    if do_phase_review "$PHASE_IDX"; then
-      # Approved - mark complete and advance
-      update_prd_field ".phases[$PHASE_IDX].status = \"complete\""
-
-      local NEXT_IDX=$((PHASE_IDX + 1))
-      if [[ "$NEXT_IDX" -lt "$TOTAL_PHASES" ]]; then
-        update_prd_field ".orchestration.currentPhaseIndex = $NEXT_IDX"
-        echo "Advancing to phase $((NEXT_IDX + 1))."
-      fi
-    else
-      # Not approved - targeted fix and re-execute (up to max retries)
-      PLAN_RETRIES=$((PLAN_RETRIES + 1))
-      TOTAL_REVIEW_REJECTIONS=$((TOTAL_REVIEW_REJECTIONS + 1))
-      incr_phase_metric rejections "$PHASE_IDX"
-      if [[ "$PLAN_RETRIES" -ge "$MAX_PLAN_RETRIES" ]]; then
-        echo "WARNING: Phase $((PHASE_IDX + 1)) failed review $PLAN_RETRIES times. Proceeding anyway."
-        update_prd_field ".phases[$PHASE_IDX].status = \"complete\""
-
-        local NEXT_IDX=$((PHASE_IDX + 1))
-        if [[ "$NEXT_IDX" -lt "$TOTAL_PHASES" ]]; then
-          update_prd_field ".orchestration.currentPhaseIndex = $NEXT_IDX"
-        fi
-      else
-        echo "Running targeted fixes for phase $((PHASE_IDX + 1)) (retry $PLAN_RETRIES of $MAX_PLAN_RETRIES)..."
-
-        # Use targeted fix planner instead of full re-plan
-        do_targeted_fix "$PHASE_IDX"
-
-        # Re-execute (only stories with passes:false will be worked on)
-        do_execute_phase "$PHASE_IDX" || true
-
-        # Will loop back and review again
-        continue
-      fi
+    # === Mark complete and advance ===
+    update_prd_field ".phases[$PHASE_IDX].status = \"complete\""
+    local NEXT_IDX=$((PHASE_IDX + 1))
+    if [[ "$NEXT_IDX" -lt "$TOTAL_PHASES" ]]; then
+      update_prd_field ".orchestration.currentPhaseIndex = $NEXT_IDX"
+      echo "Advancing to phase $((NEXT_IDX + 1))."
     fi
   done
 }
