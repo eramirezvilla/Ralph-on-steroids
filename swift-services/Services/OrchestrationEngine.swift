@@ -97,9 +97,13 @@ class OrchestrationEngine {
             throw OrchestrationError.templateNotFound("prd-single")
         }
 
-        // Invoke Claude — it writes prd.json directly to the repo
-        let output = try await claude.runAndCollect(prompt: prompt, workingDirectory: repoPath)
-        log(.claude, output)
+        // Invoke Claude — stream output so the user sees progress
+        var lineCount = 0
+        for try await line in claude.run(prompt: prompt, workingDirectory: repoPath) {
+            lineCount += 1
+            log(.claude, line)
+        }
+        log(.system, "Claude finished (\(lineCount) lines of output)")
 
         // Load the generated prd.json
         guard FileManager.default.fileExists(atPath: prdURL.path) else {
@@ -479,7 +483,7 @@ class OrchestrationEngine {
         var errorDescription: String? {
             switch self {
             case .noPRD: return "No prd.json found"
-            case .prdNotGenerated: return "PRD author did not produce prd.json"
+            case .prdNotGenerated: return "PRD author did not produce prd.json — Claude may have failed to write the file. Check the log output above for errors."
             case .noPhases: return "prd.json has no phases defined"
             case .templateNotFound(let name): return "Prompt template '\(name)' not found in bundle"
             }
